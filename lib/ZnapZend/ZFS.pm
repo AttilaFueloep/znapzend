@@ -10,19 +10,18 @@ has noaction        => sub { 0 };
 has nodestroy       => sub { 1 };
 has oracleMode      => sub { 0 };
 has recvu           => sub { 0 };
-has pfexec          => sub { 0 };
-has sudo            => sub { 0 };
+has compressed      => sub { 0 };
+has rootExec        => sub { q{} };
 has sendDelay       => sub { 3 };
 has connectTimeout  => sub { 30 };
 has propertyPrefix  => sub { q{org.znapzend} };
 has sshCmdArray     => sub { [qw(ssh),
     qw(-o batchMode=yes -o), 'ConnectTimeout=' . shift->connectTimeout] };
-has mbufferParam    => sub { [qw(-q -s 128k -W 60 -m)] }; #don't remove the -m as the buffer size will be added
+has mbufferParam    => sub { [qw(-q -s 256k -W 600 -m)] }; #don't remove the -m as the buffer size will be added
 has scrubInProgress => sub { qr/scrub in progress/ };
-has autoCreation    => sub { 0 };
 
 has zLog            => sub { Mojo::Exception->throw('zLog must be specified at creation time!') };
-has priv            => sub { my $self = shift; [$self->pfexec ? qw(pfexec) : $self->sudo ? qw(sudo) : ()] };
+has priv            => sub { my $self = shift; [$self->rootExec ? split(/ /, $self->rootExec) : ()] };
 
 ### private functions ###
 my $splitHostDataSet     = sub { return ($_[0] =~ /^(?:([^:\/]+):)?([^:]+|[^:@]+\@.+)$/); };
@@ -165,6 +164,30 @@ sub listSnapshots {
     return \@snapshots;
 }
 
+sub createDataSet {
+    my $self = shift;
+    my $dataSet = shift;
+    my $remote;
+
+    #just in case if someone aks to check '';
+    return 0 if !$dataSet;
+
+    ($remote, $dataSet) = $splitHostDataSet->($dataSet);
+    my @ssh = $self->$buildRemote($remote,
+        [@{$self->priv}, qw(zfs create -p), $dataSet]);
+
+    print STDERR '# ' . join(' ', @ssh) . "\n" if $self->debug;
+
+    #return if 'noaction' or dataset creation successful
+    return 1 if $self->noaction || !system(@ssh);
+
+    #check if dataset already exists and therefore creation failed
+    return 0 if $self->dataSetExists($dataSet);
+
+    #creation failed and dataset does not exist, throw an exception
+    Mojo::Exception->throw("ERROR: cannot create dataSet $dataSet");
+}
+
 sub listSubDataSets {
     my $self = shift;
     my $hostAndDataSet = shift;
@@ -220,11 +243,12 @@ sub destroySnapshots {
     if ($self->oracleMode){
         my $destroyError = '';
         for my $task (@toDestroy){
-            my ($remote, $dataSet) = $splitHostDataSet->($task);
-            my @ssh = $self->$buildRemote($remote, [@{$self->priv}, qw(zfs destroy), $dataSet]);
+            my ($remote, $dataSetPathAndSnap) = $splitHostDataSet->($task);
+            my ($dataSet, $snapshot) = $splitDataSetSnapshot->($dataSetPathAndSnap);
+            my @ssh = $self->$buildRemote($remote, [@{$self->priv}, qw(zfs destroy), "$dataSet\@$snapshot"]);
 
             print STDERR '# ' . join(' ', @ssh) . "\n" if $self->debug;
-            system(@ssh) and $destroyError .= "ERROR: cannot destroy snapshot $dataSet\n"
+            system(@ssh) and $destroyError .= "ERROR: cannot destroy snapshot $dataSet\@$snapshot\n"
                 if !($self->noaction || $self->nodestroy);
         }
         #remove trailing \n
@@ -266,7 +290,7 @@ sub lastAndCommonSnapshots {
     my $srcSnapshots = $self->listSnapshots($srcDataSet, $snapshotFilter);
     my $dstSnapshots = $self->listSnapshots($dstDataSet, $snapshotFilter);
 
-    return (undef, undef, undef) if ! scalar @$srcSnapshots;
+    return (undef, undef, undef) if !scalar @$srcSnapshots;
 
     my ($i, $snapTime);
     for ($i = $#{$srcSnapshots}; $i >= 0; $i--){
@@ -275,8 +299,8 @@ sub lastAndCommonSnapshots {
         last if grep { /$snapTime/ } @$dstSnapshots;
     }
 
-    return (${$srcSnapshots}[-1], (grep { /$snapTime/ } @$dstSnapshots)
-        ? ${$srcSnapshots}[$i] : undef,scalar @$dstSnapshots);
+    return (${$srcSnapshots}[-1], ((grep { /$snapTime/ } @$dstSnapshots)
+        ? ${$srcSnapshots}[$i] : undef), scalar @$dstSnapshots);
 }
 
 sub sendRecvSnapshots {
@@ -287,19 +311,13 @@ sub sendRecvSnapshots {
     my $mbufferSize = shift;
     my $snapFilter = $_[0] || qr/.*/;
     my $recvOpt = $self->recvu ? '-uF' : '-F';
+    my @sendOpt = $self->compressed ? qw(-Lce) : ();
+
     my $remote;
     my $mbufferPort;
 
-    my $dstDataSetExists = $self->dataSetExists($dstDataSet);
     my $dstDataSetPath;
-
     ($remote, $dstDataSetPath) = $splitHostDataSet->($dstDataSet);
-
-    #check if the dstDataSet exist on the destination (maybe after a creation)
-    !$dstDataSetExists && !$self->autoCreation
-        and Mojo::Exception->throw("ERROR: dataset ($dstDataSetPath) does not exist"
-	    .  ($remote ? " on destination ($remote)" : '') .", use --autoCreation "
-	    . "to let ZnapZend auto create datasets");
 
     my ($lastSnapshot, $lastCommon,$dstSnapCount)
         = $self->lastAndCommonSnapshots($srcDataSet, $dstDataSet, $snapFilter);
@@ -318,10 +336,10 @@ sub sendRecvSnapshots {
 
     my @cmd;
     if ($lastCommon){
-        @cmd = ([@{$self->priv}, 'zfs', 'send', '-I', $lastCommon, $lastSnapshot]);
+        @cmd = ([@{$self->priv}, 'zfs', 'send', @sendOpt, '-I', $lastCommon, $lastSnapshot]);
     }
     else{
-        @cmd = ([@{$self->priv}, 'zfs', 'send', $lastSnapshot]);
+        @cmd = ([@{$self->priv}, 'zfs', 'send', @sendOpt, $lastSnapshot]);
     }
 
     #if mbuffer port is set, run in 'network mode'

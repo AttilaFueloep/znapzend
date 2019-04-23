@@ -2,6 +2,7 @@ package ZnapZend::Time;
 
 use Mojo::Base -base;
 use Time::Piece;
+use Time::Seconds;
 
 ### attributes ###
 has configUnits => sub {
@@ -42,6 +43,7 @@ has unitFactors => sub {
 has scrubFilter     => sub { qr/scrub repaired/ };
 has scrubTimeFilter => sub { qr/[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}/ };
 has scrubTimeFormat => sub { q{%b %d %H:%M:%S %Y} };
+has timeWarp        => sub { undef };
 
 my $intervalToTimestamp = sub {
     my $time = shift;
@@ -101,6 +103,9 @@ sub backupPlanToHash {
             or die "ERROR: backup plan $backupPlan is not valid\n";
 
         my $key = $self->$timeToTimestamp($value, $unit);
+        exists $backupPlan{$key}
+            and die "ERROR: retention time '$value$unit' already specified\n";
+
         ($value, $unit) = $planValues[1] =~ /^(\d+)([a-z]+)$/;
         $value && exists $self->unitFactors->{$unit}
             or die "ERROR: backup plan $backupPlan ist not valid\n";
@@ -210,7 +215,9 @@ sub getTimestamp {
     my $self = shift;
     #useUTC flag set?
     my $time = $_[0] ? gmtime : localtime;
-
+    if ($self->timeWarp){
+        $time = $time + Time::Seconds->new($self->timeWarp);
+    }
     #need to call method seconds as addition will return a Time::Seconds object
     return ($time->epoch + $time->tzoffset)->seconds;
 }
@@ -219,7 +226,7 @@ sub checkTimeFormat {
     my $self = shift;
     my $timeFormat = shift;
 
-    $timeFormat =~ /^(?:%[YmdHMS]|[\w\-.:])+$/ or die "ERROR: timestamp format not valid. check your syntax\n";
+    $timeFormat =~ /^(?:%[YmdHMSz]|[\w\-.:])+$/ or die "ERROR: timestamp format not valid. check your syntax\n";
 
     #just a made-up timestamp to check if strftime and strptime work
     my $timeToCheck = 1014416542;
@@ -239,6 +246,10 @@ sub getSnapshotFilter {
 
     $timeFormat =~ s/%[mdHMS]/\\d{2}/g;
     $timeFormat =~ s/%Y/\\d{4}/g;
+    $timeFormat =~ s/%z/[-+]\\d{4}/g;
+
+    # escape dot ('.') character
+    $timeFormat =~ s/\./\\./g;
 
     return $timeFormat;
 }

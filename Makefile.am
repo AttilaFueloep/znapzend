@@ -16,12 +16,13 @@ THIRDPARTY_DIR := $(shell pwd)/thirdparty
 
 GENERATED_EXTRADIST = $(MAN)
 EXTRA_DIST = VERSION COPYRIGHT README.md LICENSE CHANGES AUTHORS PERL_MODULES $(BIN) $(PM) \
-	$(GENERATED_EXTRADIST) init/znapzend.xml.in init/znapzend.service init/README.md \
+	$(GENERATED_EXTRADIST) init/README.md init/org.znapzend.plist.in  init/znapzend.default  \
+	init/znapzend.service.in  init/znapzend.sysv.in  init/znapzend.upstart.in  init/znapzend.xml.in \
 	t/autoscrub.t t/ssh t/znapzend.t t/znapzendztatz.t t/mbuffer \
 	t/zfs t/znapzendzetup.t t/zpool
 
-CHANGES:
-	git log --full-history --simplify-merges --dense --no-merges > CHANGES
+CHANGES: VERSION
+	git log --full-history --simplify-merges --dense --no-merges > $@
 
 YEAR := $(shell date +%Y)
 DATE := $(shell date +%Y-%m-%d)
@@ -53,7 +54,6 @@ man/%.1: bin/% VERSION
 dist_bin_SCRIPTS = $(BIN)
 
 dist-hook: $(POD)  $(MAN) CHANGES
-	$(PERL) -i -p -e 's/#VERSION#/$(PACKAGE_VERSION)/g;s/#YEAR#/$(YEAR)/g;s/#DATE#/$(DATE)/g;'  $(distdir)/README.md $(distdir)/COPYRIGHT
 	$(PERL) -i -p -e 's/^my .*# VERSION/my \$$VERSION = q{$(PACKAGE_VERSION)}; # VERSION/' $(distdir)/$(BIN)
 
 install-exec-hook:
@@ -63,5 +63,5 @@ install-exec-hook:
 	mkdir -p $(DESTDIR)$(libdir)
 	[ ! -d $(THIRDPARTY_DIR)/lib/perl5 ] || cp -fr $(THIRDPARTY_DIR)/lib/perl5/* $(DESTDIR)$(libdir)
 
-test:
+check:
 	$(PERL) -Ithirdparty/lib/perl5 "-MExtUtils::Command::MM" "-e" "test_harness(0, 'lib','thirdparty/lib/perl5')" t/*.t

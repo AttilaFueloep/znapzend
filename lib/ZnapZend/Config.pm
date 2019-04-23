@@ -8,8 +8,9 @@ use Text::ParseWords qw(shellwords);
 ### attributes ###
 has debug    => sub { 0 };
 has noaction => sub { 0 };
-has pfexec   => sub { 0 };
-has sudo     => sub { 0 };
+has rootExec => sub { q{} };
+has timeWarp => sub { undef };
+has zLog => sub { Mojo::Exception->throw('zLog must be specified at creation time!') };
 
 #mandatory properties
 has mandProperties => sub {
@@ -24,8 +25,8 @@ has mandProperties => sub {
     }
 };
 
-has zfs  => sub { my $self = shift; ZnapZend::ZFS->new(pfexec => $self->pfexec, sudo => $self->sudo); };
-has time => sub { ZnapZend::Time->new(); };
+has zfs  => sub { my $self = shift; ZnapZend::ZFS->new(rootExec => $self->rootExec); };
+has time => sub { ZnapZend::Time->new(timeWarp=>shift->timeWarp); };
 
 has backupSets => sub { [] };
 
@@ -56,6 +57,9 @@ my $checkBackupPlan = sub {
     # remove trailing comma
     $returnBackupPlan =~ s/,$//;
 
+    # check if backup plan hash can be built
+    $self->time->backupPlanToHash($returnBackupPlan);
+
     return $returnBackupPlan;
 };
 
@@ -63,9 +67,21 @@ my $checkBackupSets = sub {
     my $self = shift;
 
     for my $backupSet (@{$self->backupSets}){
+
+        # in case there is only one property on this dataset, which is the "enabled" and is set to "off"
+        # consider it a normal situation and do not even notify it. This situation will appear
+        # when there are descendants of recursive ZFS dataset that should be skipped.
+        # Note: backupSets will have at least the key "Src". Therefore, we need to skip the
+        # dataset if there are two properties and one of them is "enabled".
+        if (keys(%{$backupSet}) eq 2 && exists($backupSet->{"enabled"})){
+           next;
+        }
+
         for my $prop (keys %{$self->mandProperties}){
-            exists $backupSet->{$prop}
-                or die "ERROR: property $prop not set on backup for " . $backupSet->{src} . "\n";
+            exists $backupSet->{$prop} || do {
+                $self->zLog->info("WARNING: property $prop not set on backup for " . $backupSet->{src} . ". Skipping to next dataset");
+                last;
+            };
                 
             for ($self->mandProperties->{$prop}){
                 #check mandatory properties
